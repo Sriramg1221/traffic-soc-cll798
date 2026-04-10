@@ -262,7 +262,7 @@ def run_experiment(topology: str, n_nodes: int = 30, k: int = 4,
         fname = os.path.join(save_dir, f"{topology}_k{k}.pkl")
         with open(fname, 'wb') as f:
             pickle.dump(result, f)
-        print(f"  Saved → {fname}")
+        print(f"  Saved -> {fname}")
 
     return result
 
