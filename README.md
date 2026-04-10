@@ -1,7 +1,7 @@
 # Traffic Jam Cascade on a Road Network
 ### CLL798: Complexity Science in Chemical Industry — Individual Project
 
-**Author:** [Your Name] | [Entry Number] | IIT Delhi  
+**Author:** Sriram G | 2023CH70173 | IIT Delhi  
 **Submitted:** April 10, 2026
 
 ---
