@@ -1,0 +1,492 @@
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font-sans)}
+canvas{display:block}
+button{cursor:pointer}
+select,input[type=range]{cursor:pointer}
+.panel{background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);padding:12px 16px}
+.metric{background:var(--color-background-secondary);border-radius:var(--border-radius-md);padding:10px 14px;text-align:center}
+.metric-val{font-size:20px;font-weight:500;color:var(--color-text-primary)}
+.metric-lbl{font-size:11px;color:var(--color-text-secondary);margin-top:2px}
+.ctrl-row{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.ctrl-lbl{font-size:12px;color:var(--color-text-secondary);min-width:90px}
+.ctrl-val{font-size:12px;font-weight:500;color:var(--color-text-primary);min-width:36px;text-align:right}
+</style>
+
+<h2 class="sr-only">Interactive traffic SOC simulation — NaSch model on a road network</h2>
+
+<div style="padding:1rem 0">
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px">
+    <div class="metric"><div class="metric-val" id="m-step">0</div><div class="metric-lbl">step</div></div>
+    <div class="metric"><div class="metric-val" id="m-avl">0</div><div class="metric-lbl">avalanches</div></div>
+    <div class="metric"><div class="metric-val" id="m-size">0</div><div class="metric-lbl">jam size</div></div>
+    <div class="metric"><div class="metric-val" id="m-tau">—</div><div class="metric-lbl">τ exponent</div></div>
+  </div>
+  <div class="panel" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <div class="ctrl-row" style="margin:0;flex:1;min-width:160px">
+      <span class="ctrl-lbl">topology</span>
+      <select id="sel-topo" style="flex:1;font-size:12px">
+        <option value="lattice">lattice</option>
+        <option value="random">random</option>
+        <option value="small_world">small-world</option>
+        <option value="scale_free" selected>scale-free</option>
+      </select>
+    </div>
+    <div class="ctrl-row" style="margin:0;flex:1;min-width:160px">
+      <span class="ctrl-lbl">p_brake</span>
+      <input type="range" id="sl-brake" min="5" max="60" step="5" value="30" style="flex:1">
+      <span class="ctrl-val" id="v-brake">0.30</span>
+    </div>
+    <div class="ctrl-row" style="margin:0;flex:1;min-width:160px">
+      <span class="ctrl-lbl">density ρ</span>
+      <input type="range" id="sl-dens" min="10" max="50" step="5" value="25" style="flex:1">
+      <span class="ctrl-val" id="v-dens">0.25</span>
+    </div>
+    <div style="display:flex;gap:6px">
+      <button id="btn-play" style="font-size:12px;padding:5px 14px;border-radius:var(--border-radius-md);border:0.5px solid var(--color-border-secondary);background:transparent;color:var(--color-text-primary)">Pause</button>
+      <button id="btn-reset" style="font-size:12px;padding:5px 14px;border-radius:var(--border-radius-md);border:0.5px solid var(--color-border-secondary);background:transparent;color:var(--color-text-secondary)">Reset</button>
+    </div>
+  </div>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+  <div class="panel" style="padding:10px">
+    <div style="font-size:11px;color:var(--color-text-secondary);margin-bottom:6px">road network + jam cascade</div>
+    <canvas id="cv-net" width="340" height="280" style="width:100%;border-radius:var(--border-radius-md)"></canvas>
+  </div>
+  <div class="panel" style="padding:10px">
+    <div style="font-size:11px;color:var(--color-text-secondary);margin-bottom:6px">avalanche size over time</div>
+    <canvas id="cv-ts" width="340" height="130" style="width:100%;border-radius:var(--border-radius-md)"></canvas>
+    <div style="font-size:11px;color:var(--color-text-secondary);margin:8px 0 4px">frequency distribution (log-log)</div>
+    <canvas id="cv-dist" width="340" height="130" style="width:100%;border-radius:var(--border-radius-md)"></canvas>
+  </div>
+</div>
+
+<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--color-text-secondary)">
+  <span style="display:flex;align-items:center;gap:5px"><span style="width:10px;height:10px;border-radius:50%;background:#378ADD;display:inline-block"></span>free-flowing vehicle</span>
+  <span style="display:flex;align-items:center;gap:5px"><span style="width:10px;height:10px;border-radius:50%;background:#E24B4A;display:inline-block"></span>stopped vehicle (v=0)</span>
+  <span style="display:flex;align-items:center;gap:5px"><span style="width:24px;height:3px;background:#E24B4A;display:inline-block"></span>jam cascade (avalanche edge)</span>
+  <span style="display:flex;align-items:center;gap:5px"><span style="width:24px;height:3px;background:#B4B2A9;display:inline-block"></span>free road segment</span>
+</div>
+
+</div>
+
+<script>
+const VMAX = 5;
+const N_NODES = 22;
+const ROAD_LEN = 40;
+const TS_LEN = 200;
+const rng = (()=>{let s=42;return()=>{s=(s*1664525+1013904223)&0xffffffff;return(s>>>0)/4294967296}})();
+const rngI=(a,b)=>Math.floor(rng()*(b-a))+a;
+
+let topology='scale_free', pBrake=0.30, density=0.25;
+let G={nodes:[],edges:[]}, segments={}, positions={};
+let avalancheLog=[], tsData=new Array(TS_LEN).fill(0);
+let stepCount=0, running=true, animId=null;
+
+function buildNetwork(){
+  const n=N_NODES;
+  let nodes=[],edges=[];
+  for(let i=0;i<n;i++) nodes.push(i);
+  if(topology==='lattice'){
+    const s=Math.floor(Math.sqrt(n));
+    for(let r=0;r<s;r++) for(let c=0;c<s;c++){
+      const i=r*s+c;
+      if(c+1<s) edges.push([i,i+1]);
+      if(r+1<s) edges.push([i,i+s]);
+    }
+    nodes=nodes.slice(0,s*s);
+  } else if(topology==='random'){
+    const tgt=n*2;
+    const tried=new Set();
+    while(edges.length<tgt){
+      const a=rngI(0,n),b=rngI(0,n);
+      if(a===b) continue;
+      const k=Math.min(a,b)+','+Math.max(a,b);
+      if(tried.has(k)) continue;
+      tried.add(k); edges.push([a,b]);
+    }
+  } else if(topology==='small_world'){
+    const k=4;
+    for(let i=0;i<n;i++) for(let j=1;j<=k/2;j++) edges.push([i,(i+j)%n]);
+    edges=edges.map(([a,b])=>rng()<0.1?[a,rngI(0,n)]:[a,b]);
+    edges=edges.filter(([a,b])=>a!==b);
+  } else {
+    const m=2;
+    const deg=new Array(n).fill(0);
+    for(let i=0;i<m+1;i++) for(let j=i+1;j<m+1;j++){edges.push([i,j]);deg[i]++;deg[j]++;}
+    for(let i=m+1;i<n;i++){
+      const total=deg.reduce((a,b)=>a+b,0)||1;
+      const added=new Set();
+      let tries=0;
+      while(added.size<m&&tries<200){
+        tries++;
+        let r=rng()*total,cum=0,picked=-1;
+        for(let j=0;j<i;j++){cum+=deg[j];if(cum>=r&&!added.has(j)){picked=j;break;}}
+        if(picked>=0){added.add(picked);edges.push([i,picked]);deg[i]++;deg[picked]++;}
+      }
+    }
+  }
+  const adj={};
+  nodes.forEach(n=>{adj[n]=[]});
+  edges.forEach(([a,b])=>{if(adj[a]&&adj[b]){adj[a].push(b);adj[b].push(a);}});
+  nodes=nodes.filter(n=>adj[n]&&adj[n].length>0);
+  return {nodes,edges:edges.filter(([a,b])=>nodes.includes(a)&&nodes.includes(b))};
+}
+
+function layoutNetwork(G, W, H){
+  const pos={};
+  const n=G.nodes.length;
+  if(topology==='lattice'){
+    const s=Math.floor(Math.sqrt(n));
+    G.nodes.forEach((nd,i)=>{
+      const r=Math.floor(i/s),c=i%s;
+      pos[nd]={x:40+c*(W-80)/(s-1||1),y:40+r*(H-80)/(s-1||1)};
+    });
+  } else {
+    G.nodes.forEach((nd,i)=>{
+      const angle=(2*Math.PI*i)/n;
+      const rx=(W/2-40),ry=(H/2-40);
+      pos[nd]={x:W/2+rx*Math.cos(angle),y:H/2+ry*Math.sin(angle)};
+    });
+    for(let iter=0;iter<80;iter++){
+      const force={};
+      G.nodes.forEach(nd=>{force[nd]={x:0,y:0}});
+      G.nodes.forEach(a=>{G.nodes.forEach(b=>{
+        if(a>=b) return;
+        const dx=pos[b].x-pos[a].x,dy=pos[b].y-pos[a].y;
+        const d=Math.sqrt(dx*dx+dy*dy)||1;
+        const f=800/(d*d);
+        force[a].x-=f*dx/d;force[a].y-=f*dy/d;
+        force[b].x+=f*dx/d;force[b].y+=f*dy/d;
+      })});
+      G.edges.forEach(([a,b])=>{
+        if(!pos[a]||!pos[b]) return;
+        const dx=pos[b].x-pos[a].x,dy=pos[b].y-pos[a].y;
+        const d=Math.sqrt(dx*dx+dy*dy)||1,rest=60;
+        const f=0.05*(d-rest);
+        force[a].x+=f*dx/d;force[a].y+=f*dy/d;
+        force[b].x-=f*dx/d;force[b].y-=f*dy/d;
+      });
+      G.nodes.forEach(nd=>{
+        pos[nd].x=Math.max(20,Math.min(W-20,pos[nd].x+force[nd].x*0.3));
+        pos[nd].y=Math.max(20,Math.min(H-20,pos[nd].y+force[nd].y*0.3));
+      });
+    }
+  }
+  return pos;
+}
+
+function makeSegment(){
+  const len=ROAD_LEN;
+  const cells=new Int8Array(len).fill(-1);
+  const nv=Math.max(1,Math.round(density*len));
+  const used=new Set();
+  let placed=0;
+  while(placed<nv){
+    const p=rngI(0,len);
+    if(!used.has(p)){used.add(p);cells[p]=rngI(0,VMAX+1);placed++;}
+  }
+  return cells;
+}
+
+function stepSegment(cells){
+  const len=cells.length;
+  const positions=[];
+  for(let i=0;i<len;i++) if(cells[i]>=0) positions.push(i);
+  const n=positions.length;
+  if(n===0) return cells;
+  const next=new Int8Array(len).fill(-1);
+  for(let idx=0;idx<n;idx++){
+    const pos=positions[idx];
+    let v=cells[pos];
+    v=Math.min(v+1,VMAX);
+    const npos=positions[(idx+1)%n];
+    const gap=npos>pos?npos-pos-1:(len-pos-1)+npos;
+    v=Math.min(v,gap);
+    if(v>0&&rng()<pBrake) v=Math.max(v-1,0);
+    const np=(pos+v)%len;
+    next[np]=v;
+  }
+  return next;
+}
+
+function countStopped(cells){
+  let s=0;
+  for(let i=0;i<cells.length;i++) if(cells[i]===0) s++;
+  return s;
+}
+
+function measureAvalanche(){
+  const stoppedEdges=new Set();
+  const edgeStop={};
+  for(const key in segments){
+    const [a,b]=key.split(',').map(Number);
+    if(a<b){
+      const s=countStopped(segments[key]);
+      edgeStop[key]=s;
+      if(s>0) stoppedEdges.add(key);
+    }
+  }
+  if(stoppedEdges.size===0) return 0;
+  const adj={};
+  stoppedEdges.forEach(k=>{
+    const [a,b]=k.split(',').map(Number);
+    if(!adj[a]) adj[a]=[];
+    if(!adj[b]) adj[b]=[];
+    adj[a].push(b);adj[b].push(a);
+  });
+  const visited=new Set();
+  let maxSize=0;
+  const allNodes=new Set();
+  stoppedEdges.forEach(k=>{const[a,b]=k.split(',').map(Number);allNodes.add(a);allNodes.add(b);});
+  allNodes.forEach(start=>{
+    if(visited.has(start)) return;
+    const comp=[];
+    const q=[start];visited.add(start);
+    while(q.length){const nd=q.shift();comp.push(nd);(adj[nd]||[]).forEach(nb=>{if(!visited.has(nb)){visited.add(nb);q.push(nb);}});}
+    let sz=0;
+    stoppedEdges.forEach(k=>{
+      const[a,b]=k.split(',').map(Number);
+      if(comp.includes(a)&&comp.includes(b)) sz+=edgeStop[k];
+    });
+    if(sz>maxSize) maxSize=sz;
+  });
+  return maxSize;
+}
+
+function mleExp(data){
+  const d=data.filter(x=>x>=2);
+  if(d.length<10) return NaN;
+  const s=d.reduce((a,x)=>a+Math.log(x/1.5),0);
+  return 1+d.length/s;
+}
+
+function init(){
+  G=buildNetwork();
+  const cvN=document.getElementById('cv-net');
+  positions=layoutNetwork(G,cvN.width,cvN.height);
+  segments={};
+  G.edges.forEach(([a,b])=>{
+    const key=a+','+b;
+    const key2=b+','+a;
+    const seg=makeSegment();
+    segments[key]=seg;
+    segments[key2]=seg;
+  });
+  avalancheLog=[];
+  tsData=new Array(TS_LEN).fill(0);
+  stepCount=0;
+  updateMetrics(0);
+}
+
+function updateMetrics(avlSize){
+  document.getElementById('m-step').textContent=stepCount;
+  document.getElementById('m-avl').textContent=avalancheLog.length;
+  document.getElementById('m-size').textContent=avlSize;
+  const tau=mleExp(avalancheLog);
+  document.getElementById('m-tau').textContent=isNaN(tau)?'—':tau.toFixed(2);
+}
+
+function drawNetwork(){
+  const cv=document.getElementById('cv-net');
+  const ctx=cv.getContext('2d');
+  const W=cv.width,H=cv.height;
+  ctx.clearRect(0,0,W,H);
+  const isDark=getComputedStyle(document.documentElement).getPropertyValue('color-scheme').includes('dark')||window.matchMedia('(prefers-color-scheme:dark)').matches;
+  const edgeCol=isDark?'#444441':'#D3D1C7';
+  const jamCol='#E24B4A';
+  const freeVehicleCol='#378ADD';
+  const stopVehicleCol='#E24B4A';
+  const nodeFreeCol=isDark?'#3C3489':'#534AB7';
+  const nodeJamCol='#A32D2D';
+
+  G.edges.forEach(([a,b])=>{
+    if(!positions[a]||!positions[b]) return;
+    const key=a<b?a+','+b:b+','+a;
+    const stopped=countStopped(segments[key]||segments[b+','+a]||new Int8Array(0));
+    const hasJam=stopped>0;
+    ctx.beginPath();
+    ctx.moveTo(positions[a].x,positions[a].y);
+    ctx.lineTo(positions[b].x,positions[b].y);
+    ctx.strokeStyle=hasJam?jamCol:edgeCol;
+    ctx.lineWidth=hasJam?2.5:1;
+    ctx.stroke();
+    if(hasJam){
+      const seg=segments[key]||segments[b+','+a];
+      const cells=seg;
+      const dx=positions[b].x-positions[a].x,dy=positions[b].y-positions[a].y;
+      const len=Math.sqrt(dx*dx+dy*dy);
+      for(let i=0;i<cells.length;i++){
+        if(cells[i]<0) continue;
+        const t=i/cells.length;
+        const px=positions[a].x+t*dx,py=positions[a].y+t*dy;
+        ctx.beginPath();
+        ctx.arc(px,py,cells[i]===0?3:2,0,Math.PI*2);
+        ctx.fillStyle=cells[i]===0?stopVehicleCol:freeVehicleCol;
+        ctx.fill();
+      }
+    }
+  });
+
+  G.nodes.forEach(nd=>{
+    if(!positions[nd]) return;
+    const adj=G.edges.filter(([a,b])=>a===nd||b===nd);
+    const hasJam=adj.some(([a,b])=>{const k=a<b?a+','+b:b+','+a;return countStopped(segments[k]||new Int8Array(0))>0;});
+    const deg=adj.length;
+    const r=3+deg*0.8;
+    ctx.beginPath();
+    ctx.arc(positions[nd].x,positions[nd].y,r,0,Math.PI*2);
+    ctx.fillStyle=hasJam?nodeJamCol:nodeFreeCol;
+    ctx.fill();
+  });
+}
+
+function drawTimeseries(){
+  const cv=document.getElementById('cv-ts');
+  const ctx=cv.getContext('2d');
+  const W=cv.width,H=cv.height;
+  ctx.clearRect(0,0,W,H);
+  const isDark=window.matchMedia('(prefers-color-scheme:dark)').matches;
+  const gridCol=isDark?'rgba(255,255,255,0.06)':'rgba(0,0,0,0.06)';
+  const lineCol='#A32D2D';
+  const fillCol='rgba(162,45,45,0.15)';
+  const maxV=Math.max(...tsData,1);
+  const pad={l:32,r:8,t:8,b:24};
+  const iW=W-pad.l-pad.r,iH=H-pad.t-pad.b;
+  for(let g=0;g<=4;g++){
+    const y=pad.t+iH*(1-g/4);
+    ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(pad.l+iW,y);
+    ctx.strokeStyle=gridCol;ctx.lineWidth=0.5;ctx.stroke();
+    ctx.fillStyle=isDark?'rgba(255,255,255,0.4)':'rgba(0,0,0,0.4)';
+    ctx.font='9px var(--font-sans)';ctx.textAlign='right';
+    ctx.fillText(Math.round(maxV*g/4),pad.l-3,y+3);
+  }
+  ctx.beginPath();
+  tsData.forEach((v,i)=>{
+    const x=pad.l+i/TS_LEN*iW;
+    const y=pad.t+iH*(1-v/maxV);
+    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+  });
+  ctx.strokeStyle=lineCol;ctx.lineWidth=1.2;ctx.stroke();
+  ctx.lineTo(pad.l+iW,pad.t+iH);ctx.lineTo(pad.l,pad.t+iH);
+  ctx.closePath();ctx.fillStyle=fillCol;ctx.fill();
+  ctx.fillStyle=isDark?'rgba(255,255,255,0.4)':'rgba(0,0,0,0.4)';
+  ctx.font='9px var(--font-sans)';ctx.textAlign='center';
+  ctx.fillText('time →',pad.l+iW/2,H-4);
+  ctx.textAlign='left';ctx.fillText('jam size',pad.l,10);
+}
+
+function drawDist(){
+  const cv=document.getElementById('cv-dist');
+  const ctx=cv.getContext('2d');
+  const W=cv.width,H=cv.height;
+  ctx.clearRect(0,0,W,H);
+  if(avalancheLog.length<20) {
+    ctx.fillStyle='rgba(128,128,128,0.5)';ctx.font='11px var(--font-sans)';ctx.textAlign='center';
+    ctx.fillText('collecting data...',W/2,H/2);return;
+  }
+  const isDark=window.matchMedia('(prefers-color-scheme:dark)').matches;
+  const gridCol=isDark?'rgba(255,255,255,0.06)':'rgba(0,0,0,0.06)';
+  const data=avalancheLog.filter(x=>x>0).sort((a,b)=>a-b);
+  const n=data.length;
+  const uniq=[...new Set(data)];
+  const ccdf=uniq.map(s=>data.filter(x=>x>=s).length/n);
+  const lx=uniq.map(s=>Math.log10(s));
+  const ly=ccdf.map(p=>Math.log10(p));
+  const minLx=Math.min(...lx),maxLx=Math.max(...lx);
+  const minLy=Math.min(...ly),maxLy=Math.max(...ly);
+  const pad={l:36,r:8,t:8,b:24};
+  const iW=W-pad.l-pad.r,iH=H-pad.t-pad.b;
+  const toX=v=>pad.l+(v-minLx)/(maxLx-minLx||1)*iW;
+  const toY=v=>pad.t+(1-(v-minLy)/(maxLy-minLy||1))*iH;
+  for(let g=0;g<=3;g++){
+    const y=pad.t+iH*g/3;
+    ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(pad.l+iW,y);
+    ctx.strokeStyle=gridCol;ctx.lineWidth=0.5;ctx.stroke();
+  }
+  ctx.fillStyle=isDark?'rgba(255,255,255,0.5)':'rgba(0,0,0,0.5)';
+  ctx.font='9px var(--font-sans)';ctx.textAlign='left';
+  ctx.fillText('log P(S≥s)',2,14);
+  ctx.textAlign='center';ctx.fillText('log s →',pad.l+iW/2,H-4);
+  ctx.beginPath();
+  uniq.forEach((s,i)=>{
+    const x=toX(lx[i]),y=toY(ly[i]);
+    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+  });
+  ctx.strokeStyle='#185FA5';ctx.lineWidth=1.5;ctx.stroke();
+  uniq.forEach((s,i)=>{
+    if(i%Math.max(1,Math.floor(uniq.length/20))===0){
+      ctx.beginPath();ctx.arc(toX(lx[i]),toY(ly[i]),2.5,0,Math.PI*2);
+      ctx.fillStyle='#185FA5';ctx.fill();
+    }
+  });
+  const tau=mleExp(data);
+  if(!isNaN(tau)){
+    const x0=minLx,x1=maxLx;
+    const yFit0=ly[0],yFit1=ly[0]-(tau-1)*(x1-x0);
+    ctx.beginPath();
+    ctx.moveTo(toX(x0),toY(yFit0));ctx.lineTo(toX(x1),toY(yFit1));
+    ctx.strokeStyle='#E24B4A';ctx.lineWidth=1;ctx.setLineDash([4,3]);ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle='#A32D2D';ctx.font='10px var(--font-sans)';ctx.textAlign='left';
+    ctx.fillText('τ='+tau.toFixed(2),toX(x0)+4,toY(yFit0)-4);
+  }
+}
+
+function tick(){
+  G.edges.forEach(([a,b])=>{
+    const key=a+','+b;
+    if(segments[key]) segments[key]=stepSegment(segments[key]);
+  });
+  stepCount++;
+  const avlSize=measureAvalanche();
+  if(avlSize>0) avalancheLog.push(avlSize);
+  if(avalancheLog.length>5000) avalancheLog.shift();
+  tsData.shift();tsData.push(avlSize);
+  updateMetrics(avlSize);
+  drawNetwork();
+  drawTimeseries();
+  if(stepCount%5===0) drawDist();
+}
+
+let lastTime=0;
+function loop(ts){
+  if(ts-lastTime>80){lastTime=ts;if(running)tick();}
+  animId=requestAnimationFrame(loop);
+}
+
+document.getElementById('btn-play').addEventListener('click',function(){
+  running=!running;
+  this.textContent=running?'Pause':'Play';
+});
+document.getElementById('btn-reset').addEventListener('click',()=>{
+  running=false;
+  document.getElementById('btn-play').textContent='Play';
+  topology=document.getElementById('sel-topo').value;
+  pBrake=parseInt(document.getElementById('sl-brake').value)/100;
+  density=parseInt(document.getElementById('sl-dens').value)/100;
+  init();
+  running=true;
+  document.getElementById('btn-play').textContent='Pause';
+});
+document.getElementById('sel-topo').addEventListener('change',function(){
+  topology=this.value;
+  init();
+});
+document.getElementById('sl-brake').addEventListener('input',function(){
+  pBrake=parseInt(this.value)/100;
+  document.getElementById('v-brake').textContent=pBrake.toFixed(2);
+});
+document.getElementById('sl-dens').addEventListener('input',function(){
+  density=parseInt(this.value)/100;
+  document.getElementById('v-dens').textContent=density.toFixed(2);
+});
+
+init();
+running=true;
+requestAnimationFrame(loop);
+</script>
